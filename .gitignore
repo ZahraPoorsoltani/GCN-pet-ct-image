@@ -1,0 +1,7 @@
+
+*/logs
+*/*.npy
+*/*.txt
+*/__pycache__
+*/.idea/
+todo/
