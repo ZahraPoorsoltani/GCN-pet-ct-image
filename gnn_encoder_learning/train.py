@@ -1,0 +1,122 @@
+import numpy as np
+import torch
+import os
+from coatention_model import CoattentionModel
+from unet import UNet
+from torch.autograd import Variable
+import imgaug.augmenters as iaa
+from pathlib import Path
+from dataset import LungDataset
+from tqdm import tqdm
+
+seq = iaa.Sequential([
+    iaa.Affine(rotate=[90, 180, 270]),  # rotate up to 45 degrees
+    iaa.Fliplr(0.5),
+    iaa.Flipud(0.5),
+])
+
+train_path = Path("/media/fumcomp/9CAA7029AA6FFDD8/fold_0/project/data/train")
+train_dataset = LungDataset(train_path, seq)
+
+# target_list = []
+# for _, label in tqdm(train_dataset):
+#     # Check if mask contains a tumorous pixel:
+#     if np.any(label):
+#         target_list.append(1)
+#         label_squeeze=label[0,:,:]
+#     else:
+#         target_list.append(0)
+# np.save('./target_list.npy',target_list)
+
+target_list = np.load('/media/fumcomp/9CAA7029AA6FFDD8/fold_0/project/target_list.npy')
+uniques = np.unique(target_list, return_counts=True)
+fraction = uniques[1][0] / uniques[1][1]
+
+weight_list = []
+from tqdm import tqdm
+
+for target in tqdm(target_list):
+    if target == 0:
+        weight_list.append(1)
+    else:
+        weight_list.append(fraction)
+
+sampler = torch.utils.data.sampler.WeightedRandomSampler(weight_list, len(weight_list))
+batch_size = 4  # TODO
+num_workers = 8  # TODO
+train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, num_workers=num_workers, sampler=sampler)
+
+model = CoattentionModel().cuda()
+unet_pretrained = torch.load(
+    "/w_o_encoder_learning/gnn_select_10_former_later/pretrained/epoch_40.pth",
+    map_location='cuda')
+weights = unet_pretrained['model']
+new_params = model.state_dict().copy()
+for i in new_params:
+    i_parts = i.split('.')
+    if i_parts[0] == 'encoder':
+        new_params[i] = weights[".".join(i_parts[1:])]
+    elif i_parts[0] in ['upconv3', 'd31', 'd32', 'upconv4', 'd41', 'd42', 'outconv']:
+        new_params[i] = weights[".".join(i_parts[:])]
+
+model.load_state_dict(new_params)
+
+# for name, param in model.named_parameters():
+#     name_part = name.split('.')
+#     if name_part[0] == 'encoder':
+#         param.requires_grad = False
+
+optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+loss_fn = torch.nn.BCELoss()
+logger = open('./logs/logs.txt', 'a')
+resume = 26
+if resume:
+    state_model = torch.load('./logs/epoch_' + str(resume - 1) + '.pth')
+    model.load_state_di
+    ct(state_model['model'])
+    optimizer.load_state_dict(state_model['optimizer'])
+EPOCHE = 40
+loss_report = 1
+for i in range(resume, EPOCHE):
+    batch_losses = []
+    step_100_loss = []
+    cnt = 1
+    # progress_bar=tqdm(enumerate(train_loader), total=(len(train_loader.batch_sampler)))
+    for step, (img, label) in tqdm(enumerate(train_loader), total=(len(train_loader.batch_sampler))):
+        node0 = Variable(img[0].requires_grad_()).cuda()
+        node1 = Variable(img[1].requires_grad_()).cuda()
+        node2 = Variable(img[2].requires_grad_()).cuda()
+
+        label0 = Variable(label[0].requires_grad_()).cuda()
+        label1 = Variable(label[1].requires_grad_()).cuda()
+        label2 = Variable(label[2].requires_grad_()).cuda()
+
+        pred0, pred1, pred2 = model(node0, node1, node2)
+        loss0 = loss_fn(pred0, label0)
+        loss1 = loss_fn(pred1, label1)
+        loss2 = loss_fn(pred2, label2)
+        loss = (loss0 + loss1 + loss2)
+
+        optimizer.zero_grad()  # (reset gradients)
+        loss.backward()  # (compute gradients)
+        optimizer.step()
+
+        loss_value = loss.data.cpu().numpy()
+        batch_losses.append(loss_value)
+        step_100_loss.append(loss_value)
+        if not (cnt % 100):
+            logger.write('step= {}\t mean loss={}\n'.format(step, np.mean(batch_losses)))
+
+        cnt += 1
+
+    logger.write('###########################################################\n')
+    logger.write('epoch= {}\t mean loss={}\n'.format(i, np.mean(batch_losses)))
+    logger.write('###########################################################\n')
+    logger.flush()
+    torch.save({
+        'optimizer': optimizer.state_dict(),
+        'model': model.state_dict(),
+    }, './logs/epoch_' + str(i) + '.pth')
+    print('##########################################')
+    print('################### epoch {} ############'.format(i))
+    print('##########################################')
