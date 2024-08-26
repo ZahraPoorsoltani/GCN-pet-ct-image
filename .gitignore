@@ -1,7 +1,11 @@
 
 */logs
+*/**/logs
 */*.npy
-*/*.txt
+*/**/*.npy
+*/*.pth
+*/**/*.pth
+*/**/*.txt
 */__pycache__
 */.idea/
 todo/
